@@ -247,85 +247,93 @@ def send_quiz_question(update, context, chat_id, quiz_data, question_index):
         'users': {},
         'start_time': time.time()
     }
-    
-def answer_callback(update: Update, context: CallbackContext) -> str:
-    """Process user's answer to a quiz question."""
+
+def answer_callback(update: Update, context: CallbackContext):
+    """Process user's answer to quiz question"""
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Check if the user is in an active quiz session
+    # Check if the user is in an active session
     if user_id not in active_sessions:
         query.answer("You are not currently taking a quiz.")
-        query.edit_message_text("This quiz has expired. Use /take to start a new quiz.")
+        query.edit_message_text("Please start a quiz first using /take command.")
         return
     
     session = active_sessions[user_id]
     
-    # Extract the selected option from callback data
+    # Extract the selected option
     selected_option = int(query.data.split('_')[1])
     
     # Get the current question
     question = session.get_current_question()
     if not question:
         query.answer("This question is no longer active.")
-        return "ANSWERING"
+        return
+    
+    # Record the user's answer
+    session.record_answer(selected_option)
     
     # Check if the answer is correct
-    is_correct = selected_option == question.correct_option
+    correct_option = question['correct_answer']
+    is_correct = (selected_option == correct_option)
     
-    # Record the answer
-    session.record_answer(selected_option, is_correct)
-    
-    # Show feedback
+    # Provide feedback to the user
     if is_correct:
-        query.answer("Correct!")
-        feedback = "✅ Correct!"
+        query.answer("✓ Correct!")
     else:
-        query.answer("Incorrect!")
-        feedback = f"❌ Incorrect! The correct answer was: {chr(65 + question.correct_option)}. {question.options[question.correct_option]}"
+        query.answer("× Wrong!")
     
-    # Update the message to show the correct answer
+    # Update the UI to show selected option
+    option_letters = ["(a)", "(b)", "(c)", "(d)"]
+    
+    # Format the question with modern UI
+    question_text = f"<b>{question['question']}</b>\n\n"
+    
+    # Format the answer options
+    options_text = ""
+    
+    for i, option in enumerate(question['options']):
+        letter = option_letters[i] if i < len(option_letters) else f"({i+1})"
+        options_text += f"{letter} {option}\n\n"  # Double newline for spacing
+    
+    # Add "Anonymous Quiz" subtitle
+    subtitle = "Anonymous Quiz"
+    
+    # Combine all parts
+    message_text = f"{question_text}\n{subtitle}\n\n{options_text}"
+    
+    # Create updated keyboard with filled circle for selected option
+    keyboard = []
+    for i, _ in enumerate(question['options']):
+        button_text = "⚪️"  # Default empty circle
+        if i+1 == selected_option:
+            button_text = "🔵"  # Filled circle for selected option
+            
+        button = InlineKeyboardButton(button_text, callback_data=f"answer_{i+1}")
+        keyboard.append([button])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Update the message with new text and keyboard
     query.edit_message_text(
-        f"{query.message.text}\n\n{feedback}"
+        text=message_text,
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.HTML
     )
     
-    # Move to the next question
-    session.move_to_next_question()
-    
-    # Check if there are more questions
-    if session.get_current_question():
-        # Get the next question
-        question = session.get_current_question()
-        
-        # Create options keyboard
-        keyboard = []
-        for i, option in enumerate(question.options):
-            callback_data = f"answer_{i}"
-            keyboard.append([InlineKeyboardButton(option, callback_data=callback_data)])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send question
-        question_num = session.current_question_index + 1
-        total_questions = len(session.quiz.questions)
-        
-        # Determine which time limit to use for this question
-        question_time_limit = question.time_limit if hasattr(question, 'time_limit') and question.time_limit is not None else session.quiz.time_limit
-        
-        # Send the next question as a new message
-        context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=f"Question {question_num}/{total_questions}:\n\n"
-                 f"{question.text}\n\n"
-                 f"⏱️ Time remaining: {question_time_limit} seconds",
-            reply_markup=reply_markup
-        )
+    # If the session has moved to the next question or finished
+    if session.is_quiz_completed():
+        # Show final results
+        show_quiz_results(update, context, session)
     else:
-        # End the quiz
-        end_quiz(update, context, session)
+        # Wait a moment for the user to see their selection
+        import time
+        time.sleep(1)
+        
+        # Move to the next question
+        next_question = session.get_current_question()
+        send_next_question(update, context, user_id, next_question)
     
-    return "ANSWERING"
-
 def send_next_question(update: Update, context: CallbackContext, user_id: int) -> None:
     """Helper function to send the next question after an answer."""
     if user_id not in active_sessions:
