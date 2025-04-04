@@ -174,120 +174,80 @@ def take_quiz(update: Update, context: CallbackContext) -> str:
     session.current_message_id = message.message_id
     
     return "ANSWERING"
-    
-def send_quiz_question(update: Update, context: CallbackContext, session: QuizSession) -> None:
-    """Send the current question to the user."""
-    try:
-        question = session.get_current_question()
-        
-        if not question:
-            # No more questions, finish the quiz
-            end_quiz(update, context, session)
-            return
-        
-        # Create options keyboard
-        keyboard = []
-        for i, option in enumerate(question.options):
-            callback_data = f"answer_{i}"
-            keyboard.append([InlineKeyboardButton(option, callback_data=callback_data)])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send question
-        question_num = session.current_question_index + 1
-        total_questions = len(session.quiz.questions)
-        
-        # Determine which time limit to use for this question
-        question_time_limit = question.time_limit if hasattr(question, 'time_limit') and question.time_limit is not None else session.quiz.time_limit
-        
-        # Check if we're using update.message or a fake message
-        if hasattr(update, 'message') and update.message:
-            message = update.message.reply_text(
-                f"Question {question_num}/{total_questions}:\n\n"
-                f"{question.text}\n\n"
-                f"⏱️ Time remaining: {question_time_limit} seconds",
-                reply_markup=reply_markup
-            )
-        else:
-            # This is probably a callback context, use the bot to send
-            message = context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"Question {question_num}/{total_questions}:\n\n"
-                     f"{question.text}\n\n"
-                     f"⏱️ Time remaining: {question_time_limit} seconds",
-                reply_markup=reply_markup
-            )
-        
-        # Store the message ID for later updates
-        session.current_message_id = message.message_id
-        
-        # Clear any existing timer jobs for this user
-        for job in context.job_queue.get_jobs_by_name(f"timer_{session.user_id}"):
-            job.schedule_removal()
-        
-        # Set up timer for this question
-        context.job_queue.run_once(
-            time_up,
-            question_time_limit,
-            data={
-                "user_id": session.user_id,
-                "chat_id": update.effective_chat.id,
-                "question_index": session.current_question_index
-            },
-            name=f"time_up_{session.user_id}_{session.current_question_index}"
-        )
-        
-        # Set up timer update job with unique name
-        timer_data = {
-            "user_id": session.user_id,
-            "chat_id": update.effective_chat.id,
-            "message_id": message.message_id,
-            "question_text": question.text,
-            "question_index": session.current_question_index,
-            "end_time": time.time() + question_time_limit,
-            "total_time": question_time_limit,
-            "reply_markup": reply_markup
-        }
-        
-        # First update in 3 seconds with unique job name
-        context.job_queue.run_once(
-            update_timer,
-            3,
-            data=timer_data,
-            name=f"timer_{session.user_id}"
-        )
-    except Exception as e:
-        # If something goes wrong, fall back to original behavior
-        logging.error(f"Error in send_quiz_question: {str(e)}")
-        # Attempt to send a basic question without the timer updates
-        question = session.get_current_question()
-        question_time_limit = question.time_limit if hasattr(question, 'time_limit') and question.time_limit is not None else session.quiz.time_limit
-        
-        # Create options keyboard
-        keyboard = []
-        for i, option in enumerate(question.options):
-            callback_data = f"answer_{i}"
-            keyboard.append([InlineKeyboardButton(option, callback_data=callback_data)])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Check if we're using update.message or a fake message
-        if hasattr(update, 'message') and update.message:
-            update.message.reply_text(
-                f"Question {session.current_question_index + 1}/{len(session.quiz.questions)}:\n\n"
-                f"{question.text}\n\n"
-                f"Time remaining: {question_time_limit} seconds",
-                reply_markup=reply_markup
-            )
-        else:
-            context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"Question {session.current_question_index + 1}/{len(session.quiz.questions)}:\n\n"
-                     f"{question.text}\n\n"
-                     f"Time remaining: {question_time_limit} seconds",
-                reply_markup=reply_markup
-            )
 
+def send_quiz_question(update, context, chat_id, quiz_data, question_index):
+    """
+    Send a formatted quiz question with a clean UI similar to the screenshot
+    """
+    if question_index >= len(quiz_data['questions']):
+        finish_quiz(update, context)
+        return
+    
+    # Get current question
+    question = quiz_data['questions'][question_index]
+    
+    # Format the question with modern UI
+    question_text = f"<b>{question['question']}</b>\n\n"
+    
+    # Format the answer options similar to the screenshot
+    options_text = ""
+    option_letters = ["(a)", "(b)", "(c)", "(d)"]
+    
+    for i, option in enumerate(question['options']):
+        letter = option_letters[i] if i < len(option_letters) else f"({i+1})"
+        options_text += f"{letter} {option}\n\n"  # Double newline for spacing
+    
+    # Add "Anonymous Quiz" subtitle
+    subtitle = "Anonymous Quiz"
+    
+    # Combine all parts
+    message_text = f"{question_text}\n{subtitle}\n\n{options_text}"
+    
+    # Create inline keyboard with circular option buttons
+    keyboard = []
+    
+    for i, option in enumerate(question['options']):
+        letter = option_letters[i] if i < len(option_letters) else f"({i+1})"
+        # Use a circular button representation with empty center (⚪️)
+        button = InlineKeyboardButton(f"⚪️", callback_data=f"answer_{i+1}")
+        keyboard.append([button])  # One button per row
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Store current question index
+    context.user_data['current_question'] = question_index
+    
+    # Send the question
+    message = context.bot.send_message(
+        chat_id=chat_id,
+        text=message_text,
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.HTML
+    )
+    
+    # Store message ID for updating later
+    context.user_data['question_message_id'] = message.message_id
+    
+    # Start timer for time limit (if set)
+    if 'time_limit' in quiz_data:
+        if 'timer_job' in context.user_data:
+            context.user_data['timer_job'].schedule_removal()
+        
+        context.user_data['timer_job'] = context.job_queue.run_once(
+            question_timeout, 
+            quiz_data['time_limit'], 
+            context={'chat_id': chat_id, 'question_index': question_index}
+        )
+    
+    # Initialize response tracking for this question
+    if 'responses' not in context.user_data:
+        context.user_data['responses'] = {}
+    
+    context.user_data['responses'][question_index] = {
+        'users': {},
+        'start_time': time.time()
+    }
+    
 def answer_callback(update: Update, context: CallbackContext) -> str:
     """Process user's answer to a quiz question."""
     query = update.callback_query
